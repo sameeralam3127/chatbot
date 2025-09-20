@@ -1,117 +1,36 @@
-# app.py
 import streamlit as st
-import requests
-import json
+from chat_api import OllamaAPI
+from rag import RAGEngine
+from mcp import MCPServer
 
-# Optional imports for different APIs
-try:
-    from openai import OpenAI
-except ImportError:
-    OpenAI = None
+st.set_page_config(page_title="💬 Local Chatbot with Ollama + RAG + MCP", layout="wide")
+st.title("💬 Local Chatbot with RAG + MCP")
 
-try:
-    import anthropic
-except ImportError:
-    anthropic = None
+# --- Ollama ---
+ollama_client = OllamaAPI()
+available_models = ollama_client.list_models()
+selected_model = st.sidebar.selectbox("Select Ollama Model", available_models)
+ollama_client.model = selected_model
 
-st.set_page_config(page_title="💬 Multi-API Chatbot", layout="wide")
-st.title("💬 Multi-API Chatbot (Mac-ready)")
+# --- RAG ---
+st.sidebar.header("RAG Settings")
+enable_rag = st.sidebar.checkbox("Enable RAG", value=True)
+rag_engine = RAGEngine()
 
-# ------------------------
-# API Selection
-# ------------------------
-api_name = st.selectbox("Select API", ["ollama", "openai", "claude"])
+uploaded_files = st.sidebar.file_uploader(
+    "Upload documents", type=["txt", "pdf", "docx", "md"], accept_multiple_files=True
+)
 
-# Inputs for API keys
-api_key = None
-if api_name in ["openai", "claude"]:
-    api_key = st.text_input(f"{api_name} API Key", type="password")
+if enable_rag and uploaded_files:
+    rag_engine.process_files(uploaded_files)
+    st.sidebar.success(f"Processed {len(rag_engine.documents)} chunks for RAG")
 
-# Ollama model selection
-ollama_model = "llama3.1:8b"
-if api_name == "ollama":
-    ollama_model = st.text_input("Ollama Model Name", value="llama3.1:8b")
+# --- MCP ---
+st.sidebar.header("MCP Settings")
+enable_mcp = st.sidebar.checkbox("Enable MCP", value=True)
+mcp_server = MCPServer()
 
-# ------------------------
-# ChatAPI class
-# ------------------------
-class ChatAPI:
-    def __init__(self, api_name, api_key=None, ollama_model="llama3.1:8b"):
-        self.api_name = api_name
-        self.api_key = api_key
-        self.ollama_model = ollama_model
-
-        if api_name == "openai" and OpenAI:
-            self.client = OpenAI(api_key=api_key)
-        elif api_name == "claude" and anthropic:
-            self.client = anthropic.Anthropic(api_key=api_key)
-        else:
-            self.client = None
-
-    def send_message(self, messages):
-        # Combine user messages into a single prompt
-        prompt_text = "\n".join([f"{m['role']}: {m['content']}" for m in messages if m['role'] == 'user'])
-
-        # ---------------- OpenAI ----------------
-        if self.api_name == "openai":
-            try:
-                response = self.client.chat.completions.create(
-                    model="gpt-3.5-turbo",
-                    messages=messages
-                )
-                return response.choices[0].message.content
-            except Exception as e:
-                return f"OpenAI Error: {e}"
-
-        # ---------------- Ollama (using direct HTTP API) ----------------
-        elif self.api_name == "ollama":
-            try:
-                # Use Ollama's HTTP API directly
-                url = "http://localhost:11434/api/chat"
-                payload = {
-                    "model": self.ollama_model,
-                    "messages": messages,
-                    "stream": False
-                }
-                
-                response = requests.post(url, json=payload)
-                response.raise_for_status()
-                
-                result = response.json()
-                return result.get("message", {}).get("content", "No content received")
-                
-            except requests.exceptions.ConnectionError:
-                return "Error: Could not connect to Ollama. Make sure Ollama is running on your Mac (run 'ollama serve' in terminal)."
-            except Exception as e:
-                return f"Ollama Error: {e}"
-
-        # ---------------- Claude ----------------
-        elif self.api_name == "claude":
-            try:
-                # Convert messages to Claude format
-                prompt = "\n\n".join([f"{m['role']}: {m['content']}" for m in messages])
-                prompt = f"\n\nHuman: {prompt}\n\nAssistant:"
-                
-                response = self.client.completions.create(
-                    model="claude-2",
-                    prompt=prompt,
-                    max_tokens_to_sample=1000
-                )
-                return response.completion
-            except Exception as e:
-                return f"Claude Error: {e}"
-
-        return "API not configured correctly."
-
-# ------------------------
-# Initialize API
-# ------------------------
-if api_name:
-    chat_api = ChatAPI(api_name, api_key=api_key, ollama_model=ollama_model)
-
-# ------------------------
-# Session state for chat messages
-# ------------------------
+# --- Session state ---
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
@@ -126,23 +45,27 @@ if prompt := st.chat_input("Type your message..."):
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    # Get API response
-    with st.spinner("Thinking..."):
-        response = chat_api.send_message(st.session_state.messages)
-        st.session_state.messages.append({"role": "assistant", "content": response})
-        with st.chat_message("assistant"):
-            st.markdown(response)
+    # --- Build context ---
+    context = ""
+    if enable_rag and rag_engine.documents:
+        relevant = rag_engine.retrieve(prompt)
+        if relevant:
+            context += "Relevant info from your files:\n"
+            for doc in relevant:
+                context += f"- {doc['filename']}: {doc['snippet']}\n"
 
-# ------------------------
-# Instructions for Ollama
-# ------------------------
-if api_name == "ollama":
-    st.sidebar.info("""
-    **Ollama Setup Instructions:**
-    
-    1. Install Ollama: Visit [ollama.ai](https://ollama.ai)
-    2. Download and install for macOS
-    3. Pull a model: `ollama pull llama3.1:8b`
-    4. Start Ollama: `ollama serve`
-    5. Make sure it's running on http://localhost:11434
-    """)
+    if enable_mcp:
+        context += "\nMCP resources:\n"
+        context += mcp_server.gather_context(prompt)
+
+    # Inject context
+    final_prompt = context + "\n\n" + prompt
+    st.session_state.messages[-1]["content"] = final_prompt
+
+    with st.chat_message("assistant"):
+        response_area = st.empty()
+        collected = ""
+        for chunk in ollama_client.chat(st.session_state.messages, stream=True):
+            collected += chunk
+            response_area.markdown(collected)
+        st.session_state.messages.append({"role": "assistant", "content": collected})
