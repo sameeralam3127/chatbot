@@ -9,6 +9,7 @@ This project demonstrates how to combine:
 - 🗄️ **SQLite persistence** with SQLAlchemy for storing conversations
 
 Designed for **local use only**: no cloud dependencies, no external APIs required.
+![alt text](<Screenshot 2025-09-21 at 12.12.22 AM.png>)
 
 ---
 
