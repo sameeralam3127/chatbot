@@ -1,43 +1,42 @@
-import os
-import hashlib
+# mcp.py
+from datetime import datetime
+import math
 import json
-import streamlit as st
 
 class MCPServer:
-    def __init__(self, enabled_resources=None):
-        if enabled_resources is None:
-            enabled_resources = {
-                "web_search": True,
-                "calculator": True,
-                "calendar": False,
-                "document_store": True,
-            }
-        self.resources = enabled_resources
+    """
+    Local simulator for MCP-like tool calls. Replace with real tool connectors as needed.
+    """
 
-    def call(self, resource, query: str):
-        """Simulated MCP calls (replace with real server later)"""
-        if resource == "web_search":
-            return f"Web search results for '{query}': example.com/info"
+    def __init__(self, enabled=None):
+        if enabled is None:
+            enabled = {"web_search": True, "calculator": True, "document_store": True}
+        self.enabled = enabled
 
-        elif resource == "calculator":
+    def call(self, resource: str, query: str):
+        if resource == "web_search" and self.enabled.get("web_search", False):
+            # simple simulated web search
+            return f"Sample web snippet for '{query}' (local demo)."
+        if resource == "calculator" and self.enabled.get("calculator", False):
+            # try safe calculation (use eval with restricted env)
             try:
-                result = eval(query, {"__builtins__": {}})
-                return f"Calculation result: {result}"
+                safe_env = {"__builtins__": None, "math": math}
+                # only simple arithmetic: disallow letters
+                if any(c.isalpha() for c in query):
+                    return "Calculator refused: uses only numeric expressions."
+                val = eval(query, safe_env)
+                return f"Calculation result: {val}"
             except Exception:
                 return "Could not calculate."
-
-        elif resource == "calendar":
-            return f"Calendar: No events found for '{query}'."
-
-        elif resource == "document_store":
-            return f"Document store: Found reference to '{query}' in Report.docx."
-
-        return "No resource available."
+        if resource == "document_store" and self.enabled.get("document_store", False):
+            # simulated document hits
+            return f"Found reference to '{query}' in Report.docx (local demo)."
+        return f"No data for resource '{resource}'."
 
     def gather_context(self, query: str):
-        """Aggregate info from enabled MCP resources"""
-        context = ""
-        for resource, enabled in self.resources.items():
-            if enabled:
-                context += f"- {resource}: {self.call(resource, query)}\n"
-        return context
+        parts = []
+        for r, ena in self.enabled.items():
+            if not ena:
+                continue
+            parts.append(f"- {r}: {self.call(r, query)}")
+        return "MCP resources:\n" + "\n".join(parts)

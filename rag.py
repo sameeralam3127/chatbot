@@ -1,106 +1,120 @@
+# rag.py
 import os
 import hashlib
 import pickle
+from typing import List, Dict
 import chardet
 import PyPDF2
 import docx
 import streamlit as st
-from sentence_transformers import SentenceTransformer
-import numpy as np
-from sklearn.metrics.pairwise import cosine_similarity
 
-CACHE_DIR = "cache"
+try:
+    from sentence_transformers import SentenceTransformer
+    import numpy as np
+    from sklearn.metrics.pairwise import cosine_similarity
+    HAS_EMBED = True
+except Exception:
+    HAS_EMBED = False
+
+CACHE_DIR = "cache_embeddings"
 os.makedirs(CACHE_DIR, exist_ok=True)
 
 class RAGEngine:
-    def __init__(self):
-        try:
-            self.embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
-        except Exception as e:
-            st.sidebar.error(f"Could not load embedding model: {e}")
-            self.embedding_model = None
-        self.documents = []
+    def __init__(self, embedding_model_name: str = "all-MiniLM-L6-v2", chunk_size: int = 300):
+        self.chunk_size = chunk_size
+        self.documents: List[Dict] = []  # list of {"filename":..., "content":...}
         self.embeddings = None
+        self.embedding_model_name = embedding_model_name
 
-    def _chunk_text(self, text, max_length=500):
-        words = text.split()
-        for i in range(0, len(words), max_length):
-            yield " ".join(words[i : i + max_length])
-
-    def _hash_file(self, file_bytes):
-        return hashlib.md5(file_bytes).hexdigest()
-
-    def process_files(self, uploaded_files):
-        self.documents = []
-        all_embeddings = []
-
-        for uploaded_file in uploaded_files:
-            file_bytes = uploaded_file.getvalue()
-            file_hash = self._hash_file(file_bytes)
-            cache_path = os.path.join(CACHE_DIR, f"{file_hash}.pkl")
-
-            if os.path.exists(cache_path):
-                with open(cache_path, "rb") as f:
-                    chunks, embeddings = pickle.load(f)
-                self.documents.extend(chunks)
-                all_embeddings.extend(embeddings)
-                continue
-
-            # --- Extract text ---
-            file_contents = ""
+        if HAS_EMBED:
             try:
-                if uploaded_file.name.endswith(".txt"):
-                    encoding = chardet.detect(file_bytes)["encoding"] or "utf-8"
-                    file_contents = file_bytes.decode(encoding, errors="ignore")
-
-                elif uploaded_file.name.endswith(".pdf"):
-                    pdf_reader = PyPDF2.PdfReader(uploaded_file)
-                    for page in pdf_reader.pages:
-                        file_contents += page.extract_text() or ""
-
-                elif uploaded_file.name.endswith(".docx"):
-                    doc = docx.Document(uploaded_file)
-                    file_contents = "\n".join([p.text for p in doc.paragraphs])
-
-                elif uploaded_file.name.endswith(".md"):
-                    file_contents = file_bytes.decode("utf-8", errors="ignore")
-
-                # --- Chunk & embed ---
-                chunks = []
-                if file_contents.strip():
-                    for chunk in self._chunk_text(file_contents):
-                        chunks.append({"filename": uploaded_file.name, "content": chunk})
-
-                    embeddings = self.embedding_model.encode([c["content"] for c in chunks])
-
-                    with open(cache_path, "wb") as f:
-                        pickle.dump((chunks, embeddings), f)
-
-                    self.documents.extend(chunks)
-                    all_embeddings.extend(embeddings)
-
+                self.model = SentenceTransformer(self.embedding_model_name)
             except Exception as e:
-                st.sidebar.error(f"Error processing {uploaded_file.name}: {e}")
+                st.sidebar.error(f"Could not load embedding model {embedding_model_name}: {e}")
+                self.model = None
+        else:
+            self.model = None
+            st.sidebar.warning("Embedding dependencies not installed; RAG disabled.")
 
-        if all_embeddings:
-            self.embeddings = np.array(all_embeddings)
+    def _hash_bytes(self, b: bytes) -> str:
+        return hashlib.sha256(b).hexdigest()
 
-    def retrieve(self, query, top_k=3):
-        if not self.embeddings.any() or not self.embedding_model:
+    def _chunk_text(self, text: str):
+        words = text.split()
+        for i in range(0, len(words), self.chunk_size):
+            yield " ".join(words[i:i + self.chunk_size])
+
+    def process_files(self, uploaded_files) -> int:
+        """Process files, chunk them, and cache embeddings. Returns number of chunks processed."""
+        if not uploaded_files:
+            return 0
+        all_embeddings = []
+        for f in uploaded_files:
+            try:
+                raw = f.getvalue()
+                file_hash = self._hash_bytes(raw)
+                cache_file = os.path.join(CACHE_DIR, f"{file_hash}.pkl")
+                if os.path.exists(cache_file):
+                    with open(cache_file, "rb") as fh:
+                        chunks = pickle.load(fh)
+                    self.documents.extend(chunks)
+                    continue
+
+                text = ""
+                name = f.name.lower()
+                if name.endswith(".txt"):
+                    encoding = chardet.detect(raw).get("encoding") or "utf-8"
+                    text = raw.decode(encoding, errors="ignore")
+                elif name.endswith(".pdf"):
+                    reader = PyPDF2.PdfReader(f)
+                    for p in reader.pages:
+                        text += (p.extract_text() or "") + "\n"
+                elif name.endswith(".docx"):
+                    doc = docx.Document(f)
+                    text = "\n".join([p.text for p in doc.paragraphs])
+                elif name.endswith(".md"):
+                    text = raw.decode("utf-8", errors="ignore")
+                else:
+                    # fallback try utf-8 decode
+                    text = raw.decode("utf-8", errors="ignore")
+
+                chunks = []
+                for chunk in self._chunk_text(text):
+                    chunks.append({"filename": f.name, "content": chunk})
+
+                # cache chunks to speed later runs
+                with open(cache_file, "wb") as fh:
+                    pickle.dump(chunks, fh)
+
+                self.documents.extend(chunks)
+            except Exception as e:
+                st.sidebar.error(f"Error processing {f.name}: {e}")
+
+        # build embeddings (lazily)
+        if self.model and self.documents:
+            texts = [d["content"] for d in self.documents]
+            try:
+                self.embeddings = self.model.encode(texts, show_progress_bar=False)
+            except Exception as e:
+                st.sidebar.error(f"Embedding error: {e}")
+                self.embeddings = None
+
+        return len(self.documents)
+
+    def retrieve(self, query: str, top_k: int = 3):
+        """Return top_k similar chunks as list of dicts {filename, snippet, similarity}"""
+        if not self.model or self.embeddings is None or len(self.documents) == 0:
             return []
-
-        query_emb = self.embedding_model.encode([query])
-        sims = cosine_similarity(query_emb, self.embeddings)[0]
-        top_indices = np.argsort(sims)[::-1][:top_k]
-
+        q_emb = self.model.encode([query])
+        sims = cosine_similarity(q_emb, self.embeddings)[0]
+        idxs = sims.argsort()[::-1][:top_k]
         results = []
-        for idx in top_indices:
-            if sims[idx] > 0.3:
-                results.append(
-                    {
-                        "filename": self.documents[idx]["filename"],
-                        "snippet": self.documents[idx]["content"][:200] + "...",
-                        "similarity": float(sims[idx]),
-                    }
-                )
+        for i in idxs:
+            if sims[i] < 0.25:
+                continue
+            results.append({
+                "filename": self.documents[i]["filename"],
+                "snippet": (self.documents[i]["content"][:300] + "...") if len(self.documents[i]["content"]) > 300 else self.documents[i]["content"],
+                "similarity": float(sims[i])
+            })
         return results
