@@ -5,8 +5,8 @@ from rag import RAGEngine
 from mcp import MCPServer
 import db
 
-st.set_page_config(page_title="Local Chatbot (Ollama) — Simple", layout="wide")
-st.title("💬 Local Chatbot (Ollama) — Simple")
+st.set_page_config(page_title="Local Chatbot", layout="wide")
+st.title("Local Chatbot (Ollama)")
 
 # init DB
 db.init_db()
