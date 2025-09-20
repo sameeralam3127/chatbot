@@ -33,12 +33,7 @@ st.sidebar.header("MCP Settings")
 enable_mcp = st.sidebar.checkbox("Enable MCP", value=False)
 mcp = MCPServer() if enable_mcp else None
 
-# show recent messages (from DB)
-st.sidebar.header("Conversation History (recent)")
-recent = db.get_recent_messages(10)
-for r in recent:
-    ts = r.created_at.strftime("%Y-%m-%d %H:%M:%S")
-    st.sidebar.markdown(f"**{r.role}** ({ts}): {r.content[:80]}{'...' if len(r.content)>80 else ''}")
+
 
 # --- main chat area ---
 if "messages" not in st.session_state:

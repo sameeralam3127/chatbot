@@ -75,13 +75,7 @@ class OllamaAPI:
         # include stream flag for behavior clarity
         payload["stream"] = stream
 
-        # debug: show minimal payload in sidebar (clean)
-        try:
-            st.sidebar.subheader("🔍 Ollama Payload (clean)")
-            st.sidebar.json(payload)
-        except Exception:
-            pass
-
+        
         try:
             with requests.post(url, json=payload, stream=stream, timeout=60) as r:
                 r.raise_for_status()
