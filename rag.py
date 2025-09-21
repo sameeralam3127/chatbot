@@ -19,10 +19,11 @@ except Exception:
 CACHE_DIR = "cache_embeddings"
 os.makedirs(CACHE_DIR, exist_ok=True)
 
+
 class RAGEngine:
     def __init__(self, embedding_model_name: str = "all-MiniLM-L6-v2", chunk_size: int = 300):
         self.chunk_size = chunk_size
-        self.documents: List[Dict] = []  # list of {"filename":..., "content":...}
+        self.documents: List[Dict] = []
         self.embeddings = None
         self.embedding_model_name = embedding_model_name
 
@@ -45,10 +46,8 @@ class RAGEngine:
             yield " ".join(words[i:i + self.chunk_size])
 
     def process_files(self, uploaded_files) -> int:
-        """Process files, chunk them, and cache embeddings. Returns number of chunks processed."""
         if not uploaded_files:
             return 0
-        all_embeddings = []
         for f in uploaded_files:
             try:
                 raw = f.getvalue()
@@ -75,14 +74,12 @@ class RAGEngine:
                 elif name.endswith(".md"):
                     text = raw.decode("utf-8", errors="ignore")
                 else:
-                    # fallback try utf-8 decode
                     text = raw.decode("utf-8", errors="ignore")
 
                 chunks = []
                 for chunk in self._chunk_text(text):
                     chunks.append({"filename": f.name, "content": chunk})
 
-                # cache chunks to speed later runs
                 with open(cache_file, "wb") as fh:
                     pickle.dump(chunks, fh)
 
@@ -90,7 +87,6 @@ class RAGEngine:
             except Exception as e:
                 st.sidebar.error(f"Error processing {f.name}: {e}")
 
-        # build embeddings (lazily)
         if self.model and self.documents:
             texts = [d["content"] for d in self.documents]
             try:
@@ -108,10 +104,9 @@ class RAGEngine:
         q_emb = self.model.encode([query])
         sims = cosine_similarity(q_emb, self.embeddings)[0]
         idxs = sims.argsort()[::-1][:top_k]
+
         results = []
         for i in idxs:
-            if sims[i] < 0.25:
-                continue
             results.append({
                 "filename": self.documents[i]["filename"],
                 "snippet": (self.documents[i]["content"][:300] + "...") if len(self.documents[i]["content"]) > 300 else self.documents[i]["content"],
