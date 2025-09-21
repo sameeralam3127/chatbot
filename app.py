@@ -11,7 +11,7 @@ st.title("Ollama Chatbot with RAG & MCP")
 # --- Init DB ---
 db.init_db()
 
-# --- Sidebar settings ---
+# --- Sidebar: model selection ---
 ollama = OllamaAPI()
 models = ollama.list_models() or ["llama3.1:8b"]
 model = st.sidebar.selectbox("Select Ollama Model", models)
@@ -48,29 +48,29 @@ for m in st.session_state.messages:
 # --- Input ---
 prompt = st.chat_input("Type your message...")
 if prompt:
-    # Save user input (so it shows in chat)
+    # 1️⃣ Store clean user message for display
     st.session_state.messages.append({"role": "user", "content": prompt})
     db.save_message("user", prompt)
 
-    # Prepare conversation for Ollama
+    # 2️⃣ Prepare copy for LLM
     send_messages = st.session_state.messages.copy()
 
-    # --- RAG context ---
     rag_refs = []
+    use_rag = False
+
+    # 3️⃣ RAG retrieval
     if enable_rag and rag_engine:
         relevant = rag_engine.retrieve(prompt, top_k=3)
         if relevant:
+            use_rag = True
             rag_text = "\n\n".join([f"From {r['filename']}:\n{r['snippet']}" for r in relevant])
             rag_refs = [r["filename"] for r in relevant]
-
-            # Augment the *last user message* (keeps question visible in chat)
-            send_messages[-1]["content"] = (
-                f"Answer the question using ONLY the following context from uploaded documents.\n\n"
-                f"Context:\n{rag_text}\n\n"
-                f"Question: {prompt}"
+            send_messages.insert(
+                -1,
+                {"role": "system", "content": f"Use ONLY this context to answer the question:\n\n{rag_text}"}
             )
 
-    # --- MCP context ---
+    # 4️⃣ MCP context
     if enable_mcp and mcp:
         mcp_context = mcp.gather_context(prompt)
         if mcp_context:
@@ -79,7 +79,7 @@ if prompt:
                 {"role": "system", "content": f"Extra context from MCP:\n{mcp_context}"}
             )
 
-    # --- Generate response ---
+    # 5️⃣ Generate assistant response
     with st.chat_message("assistant"):
         response_area = st.empty()
         accumulated = ""
@@ -87,10 +87,11 @@ if prompt:
             accumulated += chunk
             response_area.markdown(accumulated)
 
-    # Append references
-    if rag_refs:
+    # 6️⃣ Append references only if RAG returned results
+    if use_rag and rag_refs:
         accumulated += "\n\n**References:** " + ", ".join(set(rag_refs))
+        response_area.markdown(accumulated)
 
-    # Save assistant message
+    # 7️⃣ Save assistant message
     st.session_state.messages.append({"role": "assistant", "content": accumulated})
     db.save_message("assistant", accumulated)
