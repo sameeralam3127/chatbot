@@ -11,11 +11,9 @@ st.title("Ollama Chatbot with RAG & MCP")
 # --- Init DB ---
 db.init_db()
 
-# --- Sidebar: model selection / RAG / MCP toggles ---
+# --- Sidebar settings ---
 ollama = OllamaAPI()
-models = ollama.list_models()
-if not models:
-    models = ["llama3.1:8b"]
+models = ollama.list_models() or ["llama3.1:8b"]
 model = st.sidebar.selectbox("Select Ollama Model", models)
 ollama.model = model
 
@@ -25,11 +23,10 @@ enable_rag = st.sidebar.checkbox("Enable RAG", value=False)
 rag_engine = RAGEngine() if enable_rag else None
 
 uploaded = st.sidebar.file_uploader(
-    "Upload documents (RAG)", 
-    accept_multiple_files=True, 
+    "Upload documents (RAG)",
+    accept_multiple_files=True,
     type=["txt", "pdf", "docx", "md"]
 )
-
 if enable_rag and uploaded:
     count = rag_engine.process_files(uploaded)
     st.sidebar.success(f"Processed {count} chunks for RAG")
@@ -39,41 +36,41 @@ st.sidebar.header("MCP Settings")
 enable_mcp = st.sidebar.checkbox("Enable MCP", value=False)
 mcp = MCPServer() if enable_mcp else None
 
-# --- Chat history state ---
+# --- Chat state ---
 if "messages" not in st.session_state:
-    st.session_state.messages = []  # [{"role": "user"|"assistant", "content": "..."}]
+    st.session_state.messages = []
 
-# --- Display history ---
+# --- Display chat history ---
 for m in st.session_state.messages:
     with st.chat_message(m["role"]):
         st.markdown(m["content"])
 
-# --- Chat input ---
+# --- Input ---
 prompt = st.chat_input("Type your message...")
 if prompt:
-    # save user message
+    # Save user input (so it shows in chat)
     st.session_state.messages.append({"role": "user", "content": prompt})
     db.save_message("user", prompt)
 
-    # prepare base messages
+    # Prepare conversation for Ollama
     send_messages = st.session_state.messages.copy()
 
-    # ----- RAG context injection -----
+    # --- RAG context ---
     rag_refs = []
     if enable_rag and rag_engine:
         relevant = rag_engine.retrieve(prompt, top_k=3)
         if relevant:
             rag_text = "\n\n".join([f"From {r['filename']}:\n{r['snippet']}" for r in relevant])
             rag_refs = [r["filename"] for r in relevant]
-            context_prompt = (
-                "You are a helpful assistant.\n"
-                "Answer ONLY using the following context from uploaded documents.\n"
-                "If the answer is not in the context, say: 'I don’t know based on the provided documents.'\n\n"
-                f"Context:\n{rag_text}"
-            )
-            send_messages.insert(0, {"role": "system", "content": context_prompt})
 
-    # ----- MCP context injection -----
+            # Augment the *last user message* (keeps question visible in chat)
+            send_messages[-1]["content"] = (
+                f"Answer the question using ONLY the following context from uploaded documents.\n\n"
+                f"Context:\n{rag_text}\n\n"
+                f"Question: {prompt}"
+            )
+
+    # --- MCP context ---
     if enable_mcp and mcp:
         mcp_context = mcp.gather_context(prompt)
         if mcp_context:
@@ -82,7 +79,7 @@ if prompt:
                 {"role": "system", "content": f"Extra context from MCP:\n{mcp_context}"}
             )
 
-    # --- Generate assistant response ---
+    # --- Generate response ---
     with st.chat_message("assistant"):
         response_area = st.empty()
         accumulated = ""
@@ -90,10 +87,10 @@ if prompt:
             accumulated += chunk
             response_area.markdown(accumulated)
 
-    # append references if any
+    # Append references
     if rag_refs:
         accumulated += "\n\n**References:** " + ", ".join(set(rag_refs))
 
-    # save assistant message
+    # Save assistant message
     st.session_state.messages.append({"role": "assistant", "content": accumulated})
     db.save_message("assistant", accumulated)
